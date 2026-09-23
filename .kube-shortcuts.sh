@@ -95,6 +95,60 @@ _find_pod() {
     echo "$pod"
 }
 
+# _find_container <container_keyword> <pod_fullname> <ns_fullname>  →  输出第一个匹配的 <container_fullname>
+# 说明：在 kubectl get pod <pod_fullname> -n <ns_fullname> -o jsonpath='{.spec.containers[*].name}' 里按关键字筛选
+# 补充：匹配到多个时提示并列出全部候选；一个都没匹配到则报错、列出该 pod 的全部容器并返回 1
+# 备注：kcex 在指定了 <container_keyword> 时使用
+_find_container() {
+    local keyword="$1"
+    local pod="$2"
+    local ns="$3"
+
+    # 匹配的容器列表（jsonpath 输出以空格分隔，先拆成一行一个）
+    local matches
+    _trace kubectl get pod "$pod" -n "$ns" -o jsonpath='{.spec.containers[*].name}'
+    matches=$(kubectl get pod "$pod" -n "$ns" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null \
+              | tr ' ' '\n' | grep "$keyword")
+
+    local count
+    count=$(echo "$matches" | grep -c .)
+
+    if [ "$count" -eq 0 ]; then
+        echo "❌ pod '$pod' 中未找到包含 '$keyword' 的容器" >&2
+        echo "   该 pod 的全部容器：" >&2
+        kubectl get pod "$pod" -n "$ns" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null \
+            | tr ' ' '\n' | sed 's/^/     - /' >&2
+        return 1
+    fi
+
+    # 取第一个
+    local container
+    container=$(echo "$matches" | head -1)
+
+    if [ "$count" -gt 1 ]; then
+        echo "⚠️  匹配到 $count 个容器，已选择第一个: $container" >&2
+        echo "   全部匹配：" >&2
+        echo "$matches" | sed 's/^/     - /' >&2
+    fi
+
+    echo "$container"
+}
+
+# 参数 <pod_keyword>[.<container_keyword>] 的解析工具，kcl / kclf / kcex 共用
+# 说明：容器名不含点，故按最后一个点切分，这样 pod 名字里带点也能正确解析
+
+# _split_pod_key <pod_keyword>[.<container_keyword>]  →  输出 <pod_keyword>（没有点时原样返回）
+_split_pod_key() {
+    printf '%s' "${1%.*}"
+}
+
+# _split_container_key <pod_keyword>[.<container_keyword>]  →  输出 <container_keyword>（没有点时输出空，即不指定容器）
+_split_container_key() {
+    if [[ "$1" == *.* ]]; then
+        printf '%s' "${1##*.}"
+    fi
+}
+
 # ---------- kubectl 快捷指令 ----------
 
 # kcg <ns_shortname>  →  kubectl get pod -n <ns_fullname>
@@ -115,34 +169,58 @@ kcgsv() {
     _run kubectl get services -n "$ns"
 }
 
-# kcl <pod_keyword> <ns_shortname>  →  kubectl logs <pod_fullname> -n <ns_fullname>
-# 说明：按关键字定位 pod（匹配到多个时取第一个并列出全部候选），再打印它的完整日志
-# 例：kcl pod1 ns1
+# kcl <pod_keyword>[.<container_keyword>] <ns_shortname>  →  kubectl logs <pod_fullname> [-c <container_fullname>] -n <ns_fullname>
+# 说明：按关键字定位 pod（匹配到多个时取第一个并列出全部候选），再打印它的完整日志；pod 内有多个容器时必须用 <pod_keyword>.<container_keyword> 指定
+# 例：kcl pod1 ns1        # pod 内只有一个容器
+# 例：kcl pod1.c1 ns1     # pod 内有多个容器，指定名字包含 c1 的那个
 kcl() {
-    local keyword="$1"
+    local pod_key container_key
+    pod_key=$(_split_pod_key "$1")
+    container_key=$(_split_container_key "$1")
+
     local ns
     ns=$(_ns "$2") || return 1
 
     local pod
-    pod=$(_find_pod "$keyword" "$ns") || return 1
+    pod=$(_find_pod "$pod_key" "$ns") || return 1
 
-    echo "📄 日志: $pod  (ns=$ns)"
-    _run kubectl logs "$pod" -n "$ns"
+    if [ -n "$container_key" ]; then
+        local container
+        container=$(_find_container "$container_key" "$pod" "$ns") || return 1
+
+        echo "📄 日志: $pod / $container  (ns=$ns)"
+        _run kubectl logs "$pod" -c "$container" -n "$ns"
+    else
+        echo "📄 日志: $pod  (ns=$ns)"
+        _run kubectl logs "$pod" -n "$ns"
+    fi
 }
 
-# kclf <pod_keyword> <ns_shortname>  →  kubectl logs -f <pod_fullname> -n <ns_fullname>
-# 说明：与 kcl 相同，但实时跟踪（follow）日志输出
-# 例：kclf pod1 ns1
+# kclf <pod_keyword>[.<container_keyword>] <ns_shortname>  →  kubectl logs -f <pod_fullname> [-c <container_fullname>] -n <ns_fullname>
+# 说明：与 kcl 相同，但实时跟踪（follow）日志输出；pod 内有多个容器时必须用 <pod_keyword>.<container_keyword> 指定
+# 例：kclf pod1 ns1        # pod 内只有一个容器
+# 例：kclf pod1.c1 ns1     # pod 内有多个容器，指定名字包含 c1 的那个
 kclf() {
-    local keyword="$1"
+    local pod_key container_key
+    pod_key=$(_split_pod_key "$1")
+    container_key=$(_split_container_key "$1")
+
     local ns
     ns=$(_ns "$2") || return 1
 
     local pod
-    pod=$(_find_pod "$keyword" "$ns") || return 1
+    pod=$(_find_pod "$pod_key" "$ns") || return 1
 
-    echo "📄 实时跟踪: $pod  (ns=$ns)"
-    _run kubectl logs -f "$pod" -n "$ns"
+    if [ -n "$container_key" ]; then
+        local container
+        container=$(_find_container "$container_key" "$pod" "$ns") || return 1
+
+        echo "📄 实时跟踪: $pod / $container  (ns=$ns)"
+        _run kubectl logs -f "$pod" -c "$container" -n "$ns"
+    else
+        echo "📄 实时跟踪: $pod  (ns=$ns)"
+        _run kubectl logs -f "$pod" -n "$ns"
+    fi
 }
 
 # kcns  →  列出所有已定义的命名空间简写
@@ -191,19 +269,34 @@ kctrace() {
     esac
 }
 
-# kcex <pod_keyword> <ns_shortname>  →  kubectl exec -it <pod_fullname> -n <ns_fullname> -- /bin/sh
-# 说明：进入容器，优先 bash，没有则退回 sh
-# 例：kcex pod1 ns1
+# kcex <pod_keyword>[.<container_keyword>] <ns_shortname>  →  kubectl exec -it <pod_fullname> [-c <container_fullname>] -n <ns_fullname> -- /bin/sh
+# 说明：进入容器，优先 bash，没有则退回 sh；pod 内有多个容器时必须用 <pod_keyword>.<container_keyword> 指定
+# 例：kcex pod1 ns1       # pod 内只有一个容器
+# 例：kcex pod1.c1 ns1    # pod 内有多个容器，指定名字包含 c1 的那个
 kcex() {
-    local keyword="$1"
+    local pod_key container_key
+    pod_key=$(_split_pod_key "$1")
+    container_key=$(_split_container_key "$1")
+
     local ns
     ns=$(_ns "$2") || return 1
 
     local pod
-    pod=$(_find_pod "$keyword" "$ns") || return 1
+    pod=$(_find_pod "$pod_key" "$ns") || return 1
 
-    echo "🚪 进入容器: $pod  (ns=$ns)"
-    _run kubectl exec -it "$pod" -n "$ns" -- /bin/sh -c 'command -v bash >/dev/null && exec bash || exec sh'
+    # 进入容器后执行的 shell：有 bash 就用 bash，否则退回 sh
+    local shell_cmd='command -v bash >/dev/null && exec bash || exec sh'
+
+    if [ -n "$container_key" ]; then
+        local container
+        container=$(_find_container "$container_key" "$pod" "$ns") || return 1
+
+        echo "🚪 进入容器: $pod / $container  (ns=$ns)"
+        _run kubectl exec -it "$pod" -c "$container" -n "$ns" -- /bin/sh -c "$shell_cmd"
+    else
+        echo "🚪 进入容器: $pod  (ns=$ns)"
+        _run kubectl exec -it "$pod" -n "$ns" -- /bin/sh -c "$shell_cmd"
+    fi
 }
 
 # kcdes <pod_keyword> <ns_shortname>  →  kubectl describe pod <pod_fullname> -n <ns_fullname>
