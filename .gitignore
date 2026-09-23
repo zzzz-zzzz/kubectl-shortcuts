@@ -1,0 +1,10 @@
+# ---------- IDE: JetBrains IDEA ----------
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ---------- 本地副本 ----------
+# 生产环境用的 .kube-shortcuts.sh 副本，不纳入版本管理
+prod/
