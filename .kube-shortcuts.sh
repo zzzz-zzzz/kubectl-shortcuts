@@ -18,16 +18,90 @@ declare -A NS_MAP=(
 # 命令回显开关（1=打印，0=安静）
 KCS_TRACE="${KCS_TRACE:-1}"
 
-# 解析简写为完整命名空间
-# 用法：_ns <ns_shortname>  →  输出 <ns_fullname>；未定义则报错并返回 1
+# 自动发现缓存：简写不在 NS_MAP 里时，用 kubectl get ns 按关键字反查，
+# 唯一命中就记下来，下次直接用。FIFO 上限 20 条（可用 KCS_NS_CACHE_MAX 调整）
+KCS_NS_CACHE_MAX="${KCS_NS_CACHE_MAX:-20}"
+declare -a NS_CACHE=()   # 只记录自动缓存的简写（按加入顺序），手写的不参与淘汰
+
+# 解析简写为完整命名空间，结果写进全局变量 _NS_FULL
+# 用法：_ns <ns_shortname> || return 1; ns="$_NS_FULL"
+# 说明：必须在当前 shell 直接调用，不要写成 ns=$(_ns ...) —— 命令替换是子 shell，
+#      自动缓存会写丢。先查 NS_MAP，没查到就用 kubectl get ns 按关键字反查，
+#      唯一命中则缓存后返回；没匹配到、或匹配到多个都会报错并返回 1
 _ns() {
     local key="$1"
+    _NS_FULL=""
+
+    # 1) 字典里已经有（手写的，或之前自动缓存的）
     if [ -n "${NS_MAP[$key]}" ]; then
-        echo "${NS_MAP[$key]}"
-    else
-        echo "❌ 未定义的命名空间简写: '$key'" >&2
-        echo "   已定义: ${!NS_MAP[*]}" >&2
+        _NS_FULL="${NS_MAP[$key]}"
+        return 0
+    fi
+
+    # 2) 没查到：去集群里按关键字反查命名空间
+    local matches
+    _trace kubectl get ns --no-headers
+    matches=$(kubectl get ns --no-headers 2>/dev/null | grep "$key" | awk '{print $1}')
+
+    local count
+    count=$(echo "$matches" | grep -c .)
+
+    if [ "$count" -eq 0 ]; then
+        echo "❌ 未找到包含 '$key' 的命名空间" >&2
+        echo "   已定义简写: ${!NS_MAP[*]}" >&2
+        _run kubectl get ns >&2
         return 1
+    fi
+
+    if [ "$count" -gt 1 ]; then
+        echo "❌ 简写 '$key' 匹配到 $count 个命名空间，无法自动选择" >&2
+        echo "   全部匹配：" >&2
+        echo "$matches" | sed 's/^/     - /' >&2
+        echo "   请改用更精确的简写，或在 NS_MAP 里显式写死" >&2
+        return 1
+    fi
+
+    # 3) 唯一命中：记住它，下次就不用再查集群了
+    local ns
+    ns=$(echo "$matches" | head -1)
+    _ns_cache_add "$key" "$ns"
+    echo "📌 已记住简写: $key → $ns" >&2
+    _NS_FULL="$ns"
+    return 0
+}
+
+# _ns_cache_add <ns_shortname> <ns_fullname>
+# 说明：把自动发现的简写写进 NS_MAP，并记录到 FIFO 队列；超过上限就淘汰最早的一条
+_ns_cache_add() {
+    local key="$1"
+    local ns="$2"
+
+    NS_MAP[$key]="$ns"
+    NS_CACHE+=("$key")
+
+    local oldest
+    while [ "${#NS_CACHE[@]}" -gt "$KCS_NS_CACHE_MAX" ]; do
+        oldest="${NS_CACHE[0]}"
+        unset "NS_MAP[$oldest]"
+        if [ "${#NS_CACHE[@]}" -gt 1 ]; then
+            NS_CACHE=("${NS_CACHE[@]:1}")
+        else
+            NS_CACHE=()
+        fi
+    done
+}
+
+# _ns_cache_mark <ns_shortname>  →  自动缓存的简写输出 " (自动发现)"，手写的输出空
+_ns_cache_mark() {
+    local key="$1"
+    local c
+    if [ "${#NS_CACHE[@]}" -gt 0 ]; then
+        for c in "${NS_CACHE[@]}"; do
+            if [ "$c" = "$key" ]; then
+                printf ' (自动发现)'
+                return 0
+            fi
+        done
     fi
 }
 
@@ -155,8 +229,8 @@ _split_container_key() {
 # 说明：列出 <ns_fullname> 下的所有 pod；不确定 pod 叫什么时先用它看一眼
 # 例：kcg ns1
 kcg() {
-    local ns
-    ns=$(_ns "$1") || return 1
+    _ns "$1" || return 1
+    local ns="$_NS_FULL"
     _run kubectl get pod -n "$ns"
 }
 
@@ -164,8 +238,8 @@ kcg() {
 # 说明：列出 <ns_fullname> 下的所有 service（注意是 services，不是 pod）
 # 例：kcgsv ns1
 kcgsv() {
-    local ns
-    ns=$(_ns "$1") || return 1
+    _ns "$1" || return 1
+    local ns="$_NS_FULL"
     _run kubectl get services -n "$ns"
 }
 
@@ -178,8 +252,8 @@ kcl() {
     pod_key=$(_split_pod_key "$1")
     container_key=$(_split_container_key "$1")
 
-    local ns
-    ns=$(_ns "$2") || return 1
+    _ns "$2" || return 1
+    local ns="$_NS_FULL"
 
     local pod
     pod=$(_find_pod "$pod_key" "$ns") || return 1
@@ -205,8 +279,8 @@ kclf() {
     pod_key=$(_split_pod_key "$1")
     container_key=$(_split_container_key "$1")
 
-    local ns
-    ns=$(_ns "$2") || return 1
+    _ns "$2" || return 1
+    local ns="$_NS_FULL"
 
     local pod
     pod=$(_find_pod "$pod_key" "$ns") || return 1
@@ -224,20 +298,22 @@ kclf() {
 }
 
 # kcns  →  列出所有已定义的命名空间简写
-# 说明：本地输出，不调用 kubectl
+# 说明：本地输出，不调用 kubectl；自动发现的简写会标出来
 kcns() {
     echo "📋 命名空间字典："
+    local k
     for k in "${!NS_MAP[@]}"; do
-        printf "  %-6s → %s\n" "$k" "${NS_MAP[$k]}"
+        printf "  %-6s → %s%s\n" "$k" "${NS_MAP[$k]}" "$(_ns_cache_mark "$k")"
     done
+    echo "🧠 自动发现缓存：${#NS_CACHE[@]}/$KCS_NS_CACHE_MAX（先进先出）"
 }
 
 # kcuse <ns_shortname>  →  kubectl config set-context --current --namespace=<ns_fullname>
 # 说明：把 kubectl 的默认命名空间切到 <ns_fullname>，影响之后所有未指定 -n 的命令
 # 例：kcuse ns2
 kcuse() {
-    local ns
-    ns=$(_ns "$1") || return 1
+    _ns "$1" || return 1
+    local ns="$_NS_FULL"
     _run kubectl config set-context --current --namespace="$ns"
     echo "✅ 当前命名空间已切换为: $ns"
 }
@@ -278,8 +354,8 @@ kcex() {
     pod_key=$(_split_pod_key "$1")
     container_key=$(_split_container_key "$1")
 
-    local ns
-    ns=$(_ns "$2") || return 1
+    _ns "$2" || return 1
+    local ns="$_NS_FULL"
 
     local pod
     pod=$(_find_pod "$pod_key" "$ns") || return 1
@@ -303,8 +379,9 @@ kcex() {
 # 例：kcdes pod2 ns2
 kcdes() {
     local keyword="$1"
-    local ns
-    ns=$(_ns "$2") || return 1
+
+    _ns "$2" || return 1
+    local ns="$_NS_FULL"
 
     local pod
     pod=$(_find_pod "$keyword" "$ns") || return 1

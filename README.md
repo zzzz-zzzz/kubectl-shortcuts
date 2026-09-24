@@ -56,6 +56,7 @@ Status:       Running
 ## 特性
 
 - **命名空间简写**：`ns1` → `k8s-namespace1`，一串字典搞定，不用记全名。
+- **没配过的简写也能用**：不在字典里的简写会拿 `kubectl get ns` 反查一次，唯一命中就记住（FIFO 上限 20 条），下次直接用；匹配到 0 个或多个都会明确报错，不瞎猜。
 - **pod 关键字**：不用复制粘贴 pod 全名，给个关键字（如 `kcl job xw`）即可，匹配到多个会提示并列出候选。
 - **多容器支持**：`<pod_keyword>.<container_keyword>` 语法，pod 里有多个容器时自动补 `-c`，不再报 `a container name must be specified`。
 - **命令回显**：每条指令执行前打印真正跑的那条 kubectl 命令，方便学习、复制、贴给别人排查（可用 `kctrace off` 关掉）。
@@ -90,9 +91,52 @@ declare -A NS_MAP=(
 
 改完 `source ~/.kube-shortcuts.sh` 生效，用 `kcns` 可以列出当前所有简写。
 
+### 简写没配过也能用：自动发现
+
+`NS_MAP` 里没有的简写，会拿它去 `kubectl get ns` 的结果里做一次子串匹配：
+
+- **唯一命中** → 记进缓存（`NS_MAP`），本次命令接着往下执行；
+- **一个都没匹配到** → 报错并列出全部命名空间，返回 `1`；
+- **匹配到两个及以上** → 报错并列出候选，返回 `1`。
+
+```console
+$ kcg prod                                  # prod 不在字典里，但只有 k8s-prod 匹配
+kubectl get ns --no-headers
+📌 已记住简写: prod → k8s-prod
+kubectl get pod -n k8s-prod
+NAME                        READY   STATUS      RESTARTS   AGE
+pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
+
+$ kcg prod                                  # 第二次直接用缓存，不再查 ns
+kubectl get pod -n k8s-prod
+NAME                        READY   STATUS      RESTARTS   AGE
+pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
+
+$ kcg dev                                   # dev 同时匹配 k8s-dev-app 和 k8s-dev-db
+kubectl get ns --no-headers
+❌ 简写 'dev' 匹配到 2 个命名空间，无法自动选择
+   全部匹配：
+     - k8s-dev-app
+     - k8s-dev-db
+   请改用更精确的简写，或在 NS_MAP 里显式写死
+```
+
+缓存按**先进先出**淘汰，最多 20 条，超出就丢弃最早记下的那条（可用 `KCS_NS_CACHE_MAX` 调整）；手写在 `NS_MAP` 里的条目永远不会被淘汰。`kcns` 会把自动发现的条目标出来：
+
+```console
+$ kcns
+📋 命名空间字典：
+  prod   → k8s-prod (自动发现)
+  ns1    → k8s-namespace1
+  ns2    → k8s-namespace2
+🧠 自动发现缓存：1/20（先进先出）
+```
+
+注意缓存只活在当前 shell 会话里，新开终端会重新查一次；想永久生效就把它写进 `NS_MAP`。
+
 ## 命令一览
 
-`<ns_shortname>` 是字典里的简写，会被替换成 `<ns_fullname>`。
+`<ns_shortname>` 是命名空间简写，会被换成 `<ns_fullname>`；字典里没有的简写会先自动反查（见上文「自动发现」），查不到或匹配到多个则报错退出。
 
 | 命令 | 作用 | 实际执行的命令 |
 | --- | --- | --- |
@@ -223,7 +267,9 @@ batch-job-28145600-x7k2p    0/1     Completed   0          3h
 
 | 函数 | 作用 |
 | --- | --- |
-| `_ns <ns_shortname>` | 简写 → 全名；未定义时报错并列出全部简写，返回 `1` |
+| `_ns <ns_shortname>` | 简写 → 全名，结果写进全局 `_NS_FULL`；字典没有就反向查 `kubectl get ns` 并缓存 |
+| `_ns_cache_add <ns_shortname> <ns_fullname>` | 写入自动发现缓存，超过 `KCS_NS_CACHE_MAX` 就 FIFO 淘汰 |
+| `_ns_cache_mark <ns_shortname>` | 自动发现的简写输出 ` (自动发现)`，手写的输出空 |
 | `_quote <args...>` | 把参数按 shell 语法引用成一行可直接复制的命令 |
 | `_trace <args...>` | 回显命令（走 stderr，受 `KCS_TRACE` 控制） |
 | `_run <args...>` | 回显 + 执行 |
@@ -243,5 +289,7 @@ README.md
 ## 已知限制
 
 - 脚本没有 `set -u` 防护：如果你的 shell 开启了 `set -u`，`_ns` 在遇到未定义的简写时可能先抛 `unbound variable` 而不是友好提示。
+- 自动发现缓存只存在于当前 shell 会话，新开终端会重新查一次 `kubectl get ns`；永久生效请写进 `NS_MAP`。
+- 简写不在字典里时会多一次 `kubectl get ns`（命中缓存后不再查询）。反查同样是 `grep` 子串语义，`dev` 会同时匹配 `k8s-dev-app` 和 `k8s-dev-db`。
 - 关键字是 `grep` 语义，含正则元字符时会按正则解释（见上文「关键字匹配规则」）。
 - 依赖 `kubectl` 在 `PATH` 中，以及 `grep` / `awk` / `sed` / `head` / `tr` 等基础工具（Windows 下建议在 Git Bash 或 WSL 中使用）。
