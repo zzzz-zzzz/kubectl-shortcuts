@@ -1,35 +1,37 @@
+[English](README.md) | [中文](README_CN.md)
+
 # kubectl-shortcuts
 
-一组 kubectl 快捷指令，用「命名空间简写 + pod 关键字」代替每次敲完整命令，日常排查只需要敲很短的一段。
+A handful of kubectl shortcuts that replace full commands with a **namespace shorthand + pod keyword**, so everyday troubleshooting is just a few keystrokes.
 
 ```console
-$ kcg ns1                                  # 这个命名空间里有哪些 pod
+$ kcg ns1                                  # what pods live in this namespace?
 kubectl get pod -n k8s-namespace1
 NAME                        READY   STATUS      RESTARTS   AGE
 pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
 pod2-6b8c7d9f4-fghij        1/1     Running     0          5h
 batch-job-28145600-x7k2p    0/1     Completed   0          3h
 
-$ kcgsv ns1                                # service 同理
+$ kcgsv ns1                                # same for services
 kubectl get services -n k8s-namespace1
 NAME        TYPE        CLUSTER-IP     PORT(S)   AGE
 pod1-svc    ClusterIP   10.96.12.34    80/TCP    12d
 
-$ kcl pod2 ns1                             # pod 里只有一个容器，直接看日志
+$ kcl pod2 ns1                             # single-container pod: just show the log
 kubectl get pod -n k8s-namespace1 --no-headers
 📄 日志: pod2-6b8c7d9f4-fghij  (ns=k8s-namespace1)
 kubectl logs pod2-6b8c7d9f4-fghij -n k8s-namespace1
 2026-09-23 09:00:01 INFO  app started
 2026-09-23 09:00:02 INFO  connected to db
 
-$ kcl pod1.c1 ns1                          # pod 里有多个容器，用 .容器名 指定
+$ kcl pod1.c1 ns1                          # multi-container pod: pick one with .container
 kubectl get pod -n k8s-namespace1 --no-headers
 kubectl get pod pod1-7d9f8c4b5-abcde -n k8s-namespace1 -o 'jsonpath={.spec.containers[*].name}'
 📄 日志: pod1-7d9f8c4b5-abcde / c1  (ns=k8s-namespace1)
 kubectl logs pod1-7d9f8c4b5-abcde -c c1 -n k8s-namespace1
 2026-09-23 09:00:01 INFO  app started
 
-$ kclf pod1.c2 ns1                         # 实时跟踪（Ctrl+C 退出）
+$ kclf pod1.c2 ns1                         # follow the log (Ctrl+C to stop)
 kubectl get pod -n k8s-namespace1 --no-headers
 kubectl get pod pod1-7d9f8c4b5-abcde -n k8s-namespace1 -o 'jsonpath={.spec.containers[*].name}'
 📄 实时跟踪: pod1-7d9f8c4b5-abcde / c2  (ns=k8s-namespace1)
@@ -37,14 +39,14 @@ kubectl logs -f pod1-7d9f8c4b5-abcde -c c2 -n k8s-namespace1
 2026-09-23 09:00:03 INFO  request handled
 ^C
 
-$ kcex pod1.c1 ns1                         # 进容器排查（优先 bash，没有则退回 sh）
+$ kcex pod1.c1 ns1                         # get a shell inside the container (bash, else sh)
 kubectl get pod -n k8s-namespace1 --no-headers
 kubectl get pod pod1-7d9f8c4b5-abcde -n k8s-namespace1 -o 'jsonpath={.spec.containers[*].name}'
 🚪 进入容器: pod1-7d9f8c4b5-abcde / c1  (ns=k8s-namespace1)
 kubectl exec -it pod1-7d9f8c4b5-abcde -c c1 -n k8s-namespace1 -- /bin/sh -c 'command -v bash >/dev/null && exec bash || exec sh'
-root@pod1-7d9f8c4b5-abcde:/usr/local/app#   # 已经在容器里了
+root@pod1-7d9f8c4b5-abcde:/usr/local/app#   # you are inside the container now
 
-$ kcdes pod2 ns1                           # 看 pod 详情
+$ kcdes pod2 ns1                           # pod details
 kubectl get pod -n k8s-namespace1 --no-headers
 🔍 describe: pod2-6b8c7d9f4-fghij  (ns=k8s-namespace1)
 kubectl describe pod pod2-6b8c7d9f4-fghij -n k8s-namespace1
@@ -53,66 +55,68 @@ Namespace:    k8s-namespace1
 Status:       Running
 ```
 
-## 特性
+The script's own messages (`📄 日志: ...`, `🚪 进入容器: ...`) are printed in Chinese; the commands it runs are plain kubectl.
 
-- **命名空间简写**：`ns1` → `k8s-namespace1`，一串字典搞定，不用记全名。
-- **没配过的简写也能用**：不在字典里的简写会拿 `kubectl get ns` 反查一次，唯一命中就记住（FIFO 上限 20 条），下次直接用；匹配到 0 个或多个都会明确报错，不瞎猜。
-- **pod 关键字**：不用复制粘贴 pod 全名，给个关键字（如 `kcl job xw`）即可，匹配到多个会提示并列出候选。
-- **多容器支持**：`<pod_keyword>.<container_keyword>` 语法，pod 里有多个容器时自动补 `-c`，不再报 `a container name must be specified`。
-- **命令回显**：每条指令执行前打印真正跑的那条 kubectl 命令，方便学习、复制、贴给别人排查（可用 `kctrace off` 关掉）。
-- **只做包装**：所有命令都只是把参数拼成一条 kubectl 命令，不会额外改动集群；唯一会改本地状态的是 `kcuse`（切换 kubeconfig 默认命名空间）。
+## Features
 
-## 安装
+- **Namespace shorthands**: `ns1` → `k8s-namespace1`, kept in one dictionary, no more typing full names.
+- **Shorthands you never configured still work**: a shorthand missing from the dictionary is looked up once with `kubectl get ns`; a unique hit is remembered (FIFO, max 20 entries) and reused. Zero or multiple matches fail loudly instead of guessing.
+- **Pod keywords**: no more copy-pasting pod names — give a keyword (e.g. `kcl job xw`); when several match, all candidates are listed.
+- **Multi-container support**: the `<pod_keyword>.<container_keyword>` syntax adds `-c` for you, no more `a container name must be specified`.
+- **Command echo**: the real kubectl command is printed before it runs, handy for learning, copying, or pasting into a ticket (`kctrace off` silences it).
+- **Thin wrapper only**: every command just assembles a kubectl command; the only one that changes local state is `kcuse` (switching the kubeconfig default namespace).
+
+## Installation
 
 ```bash
-# 1. 把脚本放到家目录
+# 1. put the script in your home directory
 cp .kube-shortcuts.sh ~/.kube-shortcuts.sh
 
-# 2. 让 ~/.bashrc 引入它
+# 2. source it from ~/.bashrc
 echo '[ -f ~/.kube-shortcuts.sh ] && source ~/.kube-shortcuts.sh' >> ~/.bashrc
 
-# 3. 生效
+# 3. reload
 source ~/.bashrc
 ```
 
-环境要求：**bash 4.0+**（用到关联数组 `declare -A`）。Linux、WSL、Git Bash 自带版本都满足；macOS 自带的 bash 3.2 不支持，需要 `brew install bash`。
+Requires **bash 4.0+** (associative arrays). Linux, WSL and Git Bash are fine; macOS ships bash 3.2, so `brew install bash` is needed there.
 
-## 配置命名空间字典
+## Configuring the namespace dictionary
 
-编辑脚本顶部的 `NS_MAP`，加一行就是一个新简写：
+Edit `NS_MAP` at the top of the script — one line per shorthand:
 
 ```bash
 declare -A NS_MAP=(
     [ns1]="k8s-namespace1"
     [ns2]="k8s-namespace2"
-    # 新增：直接加一行即可
+    # To add one: just append a line
 )
 ```
 
-改完 `source ~/.kube-shortcuts.sh` 生效，用 `kcns` 可以列出当前所有简写。
+Run `source ~/.kube-shortcuts.sh` to apply, and `kcns` to list every shorthand.
 
-### 简写没配过也能用：自动发现
+### Auto-discovery for shorthands that are not in the dictionary
 
-`NS_MAP` 里没有的简写，会拿它去 `kubectl get ns` 的结果里做一次子串匹配：
+A shorthand missing from `NS_MAP` is matched as a substring against the output of `kubectl get ns`:
 
-- **唯一命中** → 记进缓存（`NS_MAP`），本次命令接着往下执行；
-- **一个都没匹配到** → 报错并列出全部命名空间，返回 `1`；
-- **匹配到两个及以上** → 报错并列出候选，返回 `1`。
+- **exactly one match** → it is cached into `NS_MAP` and the command continues;
+- **no match** → error plus the full namespace list, exit code `1`;
+- **two or more matches** → error plus the candidates, exit code `1`.
 
 ```console
-$ kcg prod                                  # prod 不在字典里，但只有 k8s-prod 匹配
+$ kcg prod                                  # prod is not configured, only k8s-prod matches
 kubectl get ns --no-headers
 📌 已记住简写: prod → k8s-prod
 kubectl get pod -n k8s-prod
 NAME                        READY   STATUS      RESTARTS   AGE
 pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
 
-$ kcg prod                                  # 第二次直接用缓存，不再查 ns
+$ kcg prod                                  # second time: straight from the cache, no ns lookup
 kubectl get pod -n k8s-prod
 NAME                        READY   STATUS      RESTARTS   AGE
 pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
 
-$ kcg dev                                   # dev 同时匹配 k8s-dev-app 和 k8s-dev-db
+$ kcg dev                                   # dev matches both k8s-dev-app and k8s-dev-db
 kubectl get ns --no-headers
 ❌ 简写 'dev' 匹配到 2 个命名空间，无法自动选择
    全部匹配：
@@ -121,7 +125,7 @@ kubectl get ns --no-headers
    请改用更精确的简写，或在 NS_MAP 里显式写死
 ```
 
-缓存按**先进先出**淘汰，最多 20 条，超出就丢弃最早记下的那条（可用 `KCS_NS_CACHE_MAX` 调整）；手写在 `NS_MAP` 里的条目永远不会被淘汰。`kcns` 会把自动发现的条目标出来：
+The cache is **FIFO**, capped at 20 entries: the oldest auto-discovered entry is dropped first (tune with `KCS_NS_CACHE_MAX`). Entries you wrote into `NS_MAP` yourself are never evicted. `kcns` marks what came from auto-discovery:
 
 ```console
 $ kcns
@@ -132,55 +136,55 @@ $ kcns
 🧠 自动发现缓存：1/20（先进先出）
 ```
 
-注意缓存只活在当前 shell 会话里，新开终端会重新查一次；想永久生效就把它写进 `NS_MAP`。
+Note the cache lives in the current shell session only — a new terminal looks the namespace up again. Write it into `NS_MAP` if you want it to stick.
 
-## 命令一览
+## Command reference
 
-`<ns_shortname>` 是命名空间简写，会被换成 `<ns_fullname>`；字典里没有的简写会先自动反查（见上文「自动发现」），查不到或匹配到多个则报错退出。
+`<ns_shortname>` is a namespace shorthand and is replaced by `<ns_fullname>`; a shorthand that is not in the dictionary is auto-discovered first (see above) and fails when it matches nothing or several namespaces.
 
-| 命令 | 作用 | 实际执行的命令 |
+| Command | What it does | Command actually run |
 | --- | --- | --- |
-| `kcg <ns_shortname>` | 列出 pod | `kubectl get pod -n <ns_fullname>` |
-| `kcgsv <ns_shortname>` | 列出 service | `kubectl get services -n <ns_fullname>` |
-| `kcl <pod_keyword>[.<container_keyword>] <ns_shortname>` | 查看日志 | `kubectl logs <pod_fullname> [-c <container_fullname>] -n <ns_fullname>` |
-| `kclf <pod_keyword>[.<container_keyword>] <ns_shortname>` | 实时跟踪日志 | `kubectl logs -f <pod_fullname> [-c <container_fullname>] -n <ns_fullname>` |
-| `kcex <pod_keyword>[.<container_keyword>] <ns_shortname>` | 进入容器 | `kubectl exec -it <pod_fullname> [-c <container_fullname>] -n <ns_fullname> -- /bin/sh` |
-| `kcdes <pod_keyword> <ns_shortname>` | 查看 pod 详情 | `kubectl describe pod <pod_fullname> -n <ns_fullname>` |
-| `kcns` | 列出已定义的命名空间简写 | 不调用 kubectl |
-| `kcuse <ns_shortname>` | 切换 kubectl 默认命名空间 | `kubectl config set-context --current --namespace=<ns_fullname>` |
-| `kctrace [on\|off]` | 开关命令回显 | 不调用 kubectl |
+| `kcg <ns_shortname>` | list pods | `kubectl get pod -n <ns_fullname>` |
+| `kcgsv <ns_shortname>` | list services | `kubectl get services -n <ns_fullname>` |
+| `kcl <pod_keyword>[.<container_keyword>] <ns_shortname>` | show logs | `kubectl logs <pod_fullname> [-c <container_fullname>] -n <ns_fullname>` |
+| `kclf <pod_keyword>[.<container_keyword>] <ns_shortname>` | follow logs | `kubectl logs -f <pod_fullname> [-c <container_fullname>] -n <ns_fullname>` |
+| `kcex <pod_keyword>[.<container_keyword>] <ns_shortname>` | open a shell in a container | `kubectl exec -it <pod_fullname> [-c <container_fullname>] -n <ns_fullname> -- /bin/sh` |
+| `kcdes <pod_keyword> <ns_shortname>` | describe a pod | `kubectl describe pod <pod_fullname> -n <ns_fullname>` |
+| `kcns` | list defined shorthands | no kubectl call |
+| `kcuse <ns_shortname>` | switch kubectl's default namespace | `kubectl config set-context --current --namespace=<ns_fullname>` |
+| `kctrace [on\|off]` | toggle command echo | no kubectl call |
 
-## 用法示例
+## Usage examples
 
 ```bash
-kcg ns1                 # 这个命名空间里有哪些 pod（不确定 pod 叫什么时先看它）
-kcgsv ns1               # 有哪些 service
+kcg ns1                 # what pods exist here (use it first when you don't know the name)
+kcgsv ns1               # what services exist
 
-kcl pod1 ns1            # pod 内只有一个容器：直接看日志
-kcl pod1.c1 ns1         # pod 内有多个容器：指定名字包含 c1 的那个
-kclf pod1.c1 ns1        # 同上，但实时跟踪（follow）
+kcl pod1 ns1            # single-container pod: read the log
+kcl pod1.c1 ns1         # multi-container pod: pick the one whose name contains c1
+kclf pod1.c1 ns1        # same, but follow the stream
 
-kcex pod1 ns1           # 进容器（优先 bash 交互，没有则退回 sh）
-kcex pod1.c1 ns1        # 指定容器进入
+kcex pod1 ns1           # open a shell (bash if available, otherwise sh)
+kcex pod1.c1 ns1        # open a shell in a specific container
 
-kcdes pod1 ns1          # 看 pod 详情
-kcns                    # 有哪些命名空间简写
-kctrace off             # 关掉命令回显
+kcdes pod1 ns1          # pod details
+kcns                    # what shorthands are defined
+kctrace off             # silence the command echo
 ```
 
-## 关键字匹配规则
+## Keyword matching rules
 
-pod 和容器都是**子串匹配**（底层是 `grep`，属于基本正则），不是精确匹配：
+Pods and containers are matched as **substrings** (`grep`, basic regex), not exactly:
 
-- 关键字 `job` 能匹配到 `job-alpha-6f9c8d7b4-k2m4p`。
-- 因为走的是正则，关键字里的 `.`、`*`、`[` 等元字符会有特殊含义，需要精确匹配时请写完整名字。
-- **匹配到多个**：取第一个，并在 stderr 提示匹配到几个、列出全部候选。
-- **一个都没匹配到**：报错，并列出该命名空间下全部 pod（或该 pod 的全部容器），返回码 `1`。
+- the keyword `job` matches `job-alpha-6f9c8d7b4-k2m4p`;
+- because it is a regex, metacharacters like `.`, `*`, `[` are special — spell the whole name out when you need an exact hit;
+- **several matches**: the first one wins, and stderr tells you how many matched plus the full candidate list;
+- **no match**: an error plus every pod in the namespace (or every container in the pod), exit code `1`.
 
-实际长这样：
+In practice:
 
 ```console
-$ kcl pod ns1                              # pod 同时匹配到 pod1-… 和 pod2-…
+$ kcl pod ns1                              # matches both pod1-… and pod2-…
 kubectl get pod -n k8s-namespace1 --no-headers
 ⚠️  匹配到 2 个 pod，已选择第一个: pod1-7d9f8c4b5-abcde
    全部匹配：
@@ -190,7 +194,7 @@ kubectl get pod -n k8s-namespace1 --no-headers
 kubectl logs pod1-7d9f8c4b5-abcde -n k8s-namespace1
 2026-09-23 09:00:01 INFO  app started
 
-$ kcl nope ns1                             # 一个都没匹配到：报错 + 列出全部 pod，返回码 1
+$ kcl nope ns1                             # nothing matched: error + full pod list, exit code 1
 kubectl get pod -n k8s-namespace1 --no-headers
 ❌ 未在 k8s-namespace1 找到包含 'nope' 的 pod
 kubectl get pod -n k8s-namespace1
@@ -199,7 +203,7 @@ pod1-7d9f8c4b5-abcde        2/2     Running     0          2d
 pod2-6b8c7d9f4-fghij        1/1     Running     0          5h
 batch-job-28145600-x7k2p    0/1     Completed   0          3h
 
-$ kcex pod1.zzz ns1                        # 容器关键字没匹配到：列出该 pod 的全部容器
+$ kcex pod1.zzz ns1                        # container keyword not found: list the pod's containers
 kubectl get pod -n k8s-namespace1 --no-headers
 kubectl get pod pod1-7d9f8c4b5-abcde -n k8s-namespace1 -o 'jsonpath={.spec.containers[*].name}'
 ❌ pod 'pod1-7d9f8c4b5-abcde' 中未找到包含 'zzz' 的容器
@@ -208,40 +212,40 @@ kubectl get pod pod1-7d9f8c4b5-abcde -n k8s-namespace1 -o 'jsonpath={.spec.conta
      - c2
 ```
 
-## 多容器 pod
+## Multi-container pods
 
-pod 里跑多个容器时，`kubectl logs` / `kubectl exec` 不带 `-c` 会直接报错。这时把参数写成 `<pod_keyword>.<container_keyword>` 即可：
+When a pod runs several containers, `kubectl logs` / `kubectl exec` without `-c` fails outright. Write the argument as `<pod_keyword>.<container_keyword>`:
 
 ```bash
 kcex pod1.c1 ns1        # → kubectl exec -it <pod_fullname> -c <container_fullname> -n <ns_fullname> -- /bin/sh
 ```
 
-解析规则是**按最后一个点切分**——容器名本身不允许含点，所以最后一个点之后一定是容器关键字；这样即使 pod 名字里带点也能正确解析：
+The argument is split at the **last dot** — container names cannot contain a dot, so everything after the last dot is the container keyword. That also keeps pod names containing dots working:
 
 ```bash
-kcex my.pod-1.main ns1  # pod 关键字 = my.pod-1，容器关键字 = main
+kcex my.pod-1.main ns1  # pod keyword = my.pod-1, container keyword = main
 ```
 
-不写点号时行为和以前完全一致（不加 `-c`）。
+With no dot the behaviour is exactly as before (no `-c` is added).
 
-## 命令回显
+## Command echo
 
-默认开启：每条指令执行前，把真正执行的 kubectl 命令打印出来。回显走 **stderr**，所以不会污染标准输出：
+On by default: the real kubectl command is printed before it runs. It goes to **stderr**, so it never pollutes stdout:
 
 ```bash
-kcl pod1 ns1 > app.log                  # app.log 里只有 📄 提示行和日志正文，混不进回显的命令行
-pod=$(_find_pod pod1 k8s-namespace1)    # 变量里只有 pod 名
+kcl pod1 ns1 > app.log                  # app.log holds the 📄 line and the log body, never the echoed commands
+pod=$(_find_pod pod1 k8s-namespace1)    # the variable holds the pod name only
 ```
 
-开关：
+Toggle it with:
 
 ```bash
-kctrace off     # 关掉回显（排查完可以安静地用）
-kctrace on      # 打开
-kctrace         # 查看当前状态
+kctrace off     # silence the echo
+kctrace on      # turn it back on
+kctrace         # show the current state
 ```
 
-关掉之后，输出里就只剩结果本身：
+With the echo off, only the result is left:
 
 ```console
 $ kctrace off
@@ -253,43 +257,47 @@ pod2-6b8c7d9f4-fghij        1/1     Running     0          5h
 batch-job-28145600-x7k2p    0/1     Completed   0          3h
 ```
 
-也可以在 `~/.bashrc` 里永久设定：`export KCS_TRACE=0`。
+You can also make it permanent from `~/.bashrc`: `export KCS_TRACE=0`.
 
-## 设计要点
+## Design notes
 
-- **回显走 stderr**：`_trace` 只负责打印，`_run` 负责「打印 + 执行」，两者分开才能让 `$(...)` 取值和管道不被回显打扰。
-- **失败时给足上下文**：`_find_pod` / `_find_container` 在找不到匹配时会顺手把候选列表打出来，省得再敲一条命令去查。
-- **共用查找逻辑**：`kcl` / `kclf` / `kcex` / `kcdes` 都走同一个 `_find_pod`，所以匹配规则、提示文案、退出码完全一致。
+- **Echo goes to stderr**: `_trace` only prints, `_run` prints and executes. Keeping them apart is what lets `$(...)` and pipes stay clean.
+- **Failures come with context**: `_find_pod` / `_find_container` list the candidates when nothing matches, so you rarely need a second command to find out why.
+- **One lookup path**: `kcl` / `kclf` / `kcex` / `kcdes` all go through the same `_find_pod`, so matching rules, messages and exit codes stay identical.
 
-## 内部函数
+## Internal helpers
 
-对外命令之外，脚本里还有一组以下划线开头的内部函数（`kc*` 命令都建立在它们之上）：
+Besides the public commands there is a set of underscore-prefixed helpers (every `kc*` command is built on them):
 
-| 函数 | 作用 |
+| Helper | Purpose |
 | --- | --- |
-| `_ns <ns_shortname>` | 简写 → 全名，结果写进全局 `_NS_FULL`；字典没有就反向查 `kubectl get ns` 并缓存 |
-| `_ns_cache_add <ns_shortname> <ns_fullname>` | 写入自动发现缓存，超过 `KCS_NS_CACHE_MAX` 就 FIFO 淘汰 |
-| `_ns_cache_mark <ns_shortname>` | 自动发现的简写输出 ` (自动发现)`，手写的输出空 |
-| `_quote <args...>` | 把参数按 shell 语法引用成一行可直接复制的命令 |
-| `_trace <args...>` | 回显命令（走 stderr，受 `KCS_TRACE` 控制） |
-| `_run <args...>` | 回显 + 执行 |
-| `_find_pod <pod_keyword> <ns_fullname>` | 输出第一个匹配的 pod 全名 |
-| `_find_container <container_keyword> <pod_fullname> <ns_fullname>` | 输出第一个匹配的容器名 |
-| `_split_pod_key <pod_keyword>[.<container_keyword>]` | 取出 pod 关键字 |
-| `_split_container_key <pod_keyword>[.<container_keyword>]` | 取出容器关键字（没有点时输出空） |
+| `_ns <ns_shortname>` | shorthand → full name, result goes into the global `_NS_FULL`; falls back to `kubectl get ns` and caches the hit |
+| `_ns_cache_add <ns_shortname> <ns_fullname>` | add to the auto-discovery cache, FIFO-evicting past `KCS_NS_CACHE_MAX` |
+| `_ns_cache_mark <ns_shortname>` | prints ` (自动发现)` for auto-discovered keys, empty otherwise |
+| `_quote <args...>` | shell-quote the arguments into a copy-pasteable one-liner |
+| `_trace <args...>` | echo the command (stderr, controlled by `KCS_TRACE`) |
+| `_run <args...>` | echo, then execute |
+| `_find_pod <pod_keyword> <ns_fullname>` | print the first matching pod name |
+| `_find_container <container_keyword> <pod_fullname> <ns_fullname>` | print the first matching container name |
+| `_split_pod_key <pod_keyword>[.<container_keyword>]` | extract the pod keyword |
+| `_split_container_key <pod_keyword>[.<container_keyword>]` | extract the container keyword (empty when there is no dot) |
 
-## 目录结构
+Note that `_ns` writes its result into `_NS_FULL` instead of echoing it, and must be called directly in the current shell — `ns=$(_ns ...)` would run in a subshell and the auto-discovery cache would be lost.
+
+## Layout
 
 ```
-.kube-shortcuts.sh        # 脚本本体，版本管理的是这份（示例命名空间）
-prod/.kube-shortcuts.sh   # 本地实际使用的那份，含真实命名空间，已被 .gitignore 排除
-README.md
+.kube-shortcuts.sh        # the script itself; this is the tracked copy (sample namespaces)
+prod/.kube-shortcuts.sh   # the copy actually used locally, real namespaces, excluded by .gitignore
+README.md                 # this file (English)
+README_CN.md              # Chinese version
 ```
 
-## 已知限制
+## Known limitations
 
-- 脚本没有 `set -u` 防护：如果你的 shell 开启了 `set -u`，`_ns` 在遇到未定义的简写时可能先抛 `unbound variable` 而不是友好提示。
-- 自动发现缓存只存在于当前 shell 会话，新开终端会重新查一次 `kubectl get ns`；永久生效请写进 `NS_MAP`。
-- 简写不在字典里时会多一次 `kubectl get ns`（命中缓存后不再查询）。反查同样是 `grep` 子串语义，`dev` 会同时匹配 `k8s-dev-app` 和 `k8s-dev-db`。
-- 关键字是 `grep` 语义，含正则元字符时会按正则解释（见上文「关键字匹配规则」）。
-- 依赖 `kubectl` 在 `PATH` 中，以及 `grep` / `awk` / `sed` / `head` / `tr` 等基础工具（Windows 下建议在 Git Bash 或 WSL 中使用）。
+- The script has no `set -u` protection: with `set -u` in your shell, `_ns` may raise `unbound variable` for an unknown shorthand instead of the friendly message.
+- The auto-discovery cache only exists for the current shell session; a new terminal looks the namespace up again. Put it in `NS_MAP` to make it permanent.
+- A shorthand that is missing from the dictionary costs one extra `kubectl get ns` (nothing once it is cached). That lookup is a `grep` substring match too, so `dev` matches both `k8s-dev-app` and `k8s-dev-db`.
+- Keywords are `grep` semantics: regex metacharacters are interpreted (see "Keyword matching rules").
+- Requires `kubectl` on `PATH` plus `grep` / `awk` / `sed` / `head` / `tr` (on Windows, use Git Bash or WSL).
+- The script's own output messages are in Chinese; only the commands it runs are plain kubectl.
